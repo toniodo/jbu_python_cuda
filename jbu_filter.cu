@@ -18,7 +18,6 @@ __global__ void jbu_filter_kernel(const int64_t numel, const float* high_res, co
 {
     int current_id = blockIdx.x * blockDim.x + threadIdx.x;
 
-
     if (current_id < numel)
     {
         int w = current_id % width;
@@ -29,8 +28,6 @@ __global__ void jbu_filter_kernel(const int64_t numel, const float* high_res, co
         int b = tmp / channel;
 
         float norm_coeff = 0.0;
-
-        //printf("Current kernel: %d, %d, %d, %d\n", b, c, h, w);
 
         for (int i = -radius; i <= radius; i++)
         {
@@ -50,17 +47,21 @@ __global__ void jbu_filter_kernel(const int64_t numel, const float* high_res, co
                     current_j = 2 * width - current_j - 1; // Reflect back
                 }
 
+                float range_distance = high_res[TENSORC2IDX(b, 0, h, w, channel, height, width)] - high_res[TENSORC2IDX(b, 0, current_i, current_j, channel, height, width)];
+
                 // Compute product of filters
-                float local_coeff = gaussian_kernel[IDX2C(i + radius, j + radius, 2*radius+1)] * 
-                (1 / (sqrt(2 * M_PI) * sigma_range)) * exp(-(high_res[TENSORC2IDX(b,0,h,w,channel,height,width)] - high_res[TENSORC2IDX(b,0,current_i,current_j,channel,height,width)]) * (high_res[TENSORC2IDX(b,0,h,w,channel,height,width)] - high_res[TENSORC2IDX(b,0,current_i,current_j,channel,height,width)]) / (2 * sigma_range * sigma_range));
+                float local_coeff = gaussian_kernel[IDX2C(i + radius, j + radius, 2*radius+1)]*  // Spatial filter
+                (1 / (sqrt(2 * M_PI) * sigma_range)) * 
+                exp(-range_distance * range_distance / (2 * sigma_range * sigma_range)); // Range filter
+
                 // Update the pixel value
-                final_tensor[TENSORC2IDX(b,c,h,w,channel, height,width)] += low_res[TENSORC2IDX(b, c, current_i, current_j, channel, height, width)] * local_coeff;
+                final_tensor[TENSORC2IDX(b, c, h, w, channel, height, width)] += low_res[TENSORC2IDX(b, c, current_i, current_j, channel, height, width)] * local_coeff;
                 norm_coeff += local_coeff;
             }
         }
         // Normalize the pixel value
-        if (norm_coeff != 0){
-            final_tensor[TENSORC2IDX(b,c,h,w,channel, height,width)] /= norm_coeff;
+        if (norm_coeff != 0.0){
+            final_tensor[TENSORC2IDX(b, c, h, w, channel, height, width)] /=  norm_coeff;
         }
     }
 }
@@ -68,9 +69,12 @@ __global__ void jbu_filter_kernel(const int64_t numel, const float* high_res, co
 at::Tensor jbu_filter_global(const at::Tensor& high_resolution, const at::Tensor& low_resolution, const int64_t radius, const at::Tensor& gaussian_kernel, const double sigma_range) {
     
     TORCH_CHECK(high_resolution.sizes()[0] == low_resolution.sizes()[0]) // Same batch size
-    TORCH_CHECK(high_resolution.sizes()[1] == 1) // Only one channel for the high resolution image
+    TORCH_CHECK(high_resolution.sizes()[1] == 1) // Only one channel for the high resolution image (guidance)
     TORCH_CHECK(high_resolution.sizes()[2] == low_resolution.sizes()[2]) // Same height size
     TORCH_CHECK(high_resolution.sizes()[3] == low_resolution.sizes()[3]) // Same width size
+    TORCH_CHECK(high_resolution.max().item<float>() < 1.0 + 0.0001) // Check inputs are in float 
+    TORCH_CHECK(low_resolution.max().item<float>() < 1.0 + 0.0001) // Check inputs are in float
+
     int batch = high_resolution.sizes()[0];
     int channel = low_resolution.sizes()[1];
     int height = high_resolution.sizes()[2];
@@ -78,6 +82,7 @@ at::Tensor jbu_filter_global(const at::Tensor& high_resolution, const at::Tensor
 
     TORCH_INTERNAL_ASSERT(high_resolution.device().type() == at::DeviceType::CUDA);
     TORCH_INTERNAL_ASSERT(low_resolution.device().type() == at::DeviceType::CUDA);
+
     at::Tensor high_resolution_contig = high_resolution.contiguous();
     at::Tensor low_resolution_contig = low_resolution.contiguous();
     at::Tensor gaussian_kernel_contig = gaussian_kernel.contiguous();
@@ -88,7 +93,7 @@ at::Tensor jbu_filter_global(const at::Tensor& high_resolution, const at::Tensor
     float* result_ptr = result.data_ptr<float>();
     dim3 dimBlock(1024);
     dim3 dimGrid((int)(result.numel() / 1024) + 1);
-    // cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
     AT_DISPATCH_FLOATING_TYPES(result.scalar_type(), "jbu_filter", ([&]{
         jbu_filter_kernel <<< dimGrid, dimBlock >>> (result.numel(), high_resolution_ptr, low_resolution_ptr, result_ptr, radius, gaussian_kernel_ptr, batch, channel, height, width, sigma_range);
     }));
