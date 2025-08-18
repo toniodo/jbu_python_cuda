@@ -1,6 +1,8 @@
 #include <ATen/Operators.h>
 #include <torch/all.h>
 #include <torch/library.h>
+#include <torch/extension.h>
+#include <pybind11/pybind11.h>
 #include <iostream>
 
 #include <cuda.h>
@@ -66,7 +68,7 @@ __global__ void jbu_filter_kernel(const int64_t numel, const float* high_res, co
     }
 }
 
-at::Tensor jbu_filter_global(const at::Tensor& high_resolution, const at::Tensor& low_resolution, const int64_t radius, const at::Tensor& gaussian_kernel, const double sigma_range) {
+at::Tensor upsample(const at::Tensor& high_resolution, const at::Tensor& low_resolution, const int64_t radius, const at::Tensor& gaussian_kernel, const double sigma_range) {
     
     TORCH_CHECK(high_resolution.sizes()[0] == low_resolution.sizes()[0]) // Same batch size
     TORCH_CHECK(high_resolution.sizes()[1] == 1) // Only one channel for the high resolution image (guidance)
@@ -103,15 +105,10 @@ at::Tensor jbu_filter_global(const at::Tensor& high_resolution, const at::Tensor
     return result;
 }
 
-// Registers CUDA implementations
-TORCH_LIBRARY(jbu_cuda, m) {
-   // Note that "float" in the schema corresponds to the C++ double type
-   // and the Python float type.
-   m.def("jbu_filter_global(Tensor high_res, Tensor low_res, int r, Tensor gaussian_kernel, float sigma_r) -> Tensor");
-}
-
-TORCH_LIBRARY_IMPL(jbu_cuda, CUDA, m) {
-  m.impl("jbu_filter_global", &jbu_filter_global);
+PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.doc() = "Implementation fo the Joint Bilateral Upsampling (JBU) using CUDA";
+    m.def("upsample", &upsample, "Upsample a low resolution image given a guidance image", 
+    pybind11::arg("high_res_tensor"), pybind11::arg("low_res_tensor"), pybind11::arg("radius"), pybind11::arg("gaussian_kernel"), pybind11::arg("sigma_range"));
 }
 
 }
