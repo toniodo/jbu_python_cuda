@@ -10,7 +10,7 @@ setup(
     ext_modules=[  
         CUDAExtension(  
             name='jbu_cuda',  
-            sources=['jbu_filter.cu'],  
+            sources=['src/jbu_filter.cu'],  
             include_dirs=[pybind11.get_include()],
         ) 
     ],  
