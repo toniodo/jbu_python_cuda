@@ -5,7 +5,21 @@ in a Python script with [PyTorch](https://pytorch.org/) tensors.
 
 ## Installation
 
-You can install this package in an environnement using pip by typing the following command in the folder of the package:
+### Prerequisites
+
+The NVIDIA CUDA Compiler (NVCC) must be installed in order to build the project. This can be done by installing the CUDA Toolkit via apt or in a Conda env using the following commands:
+
+```bash
+# Via apt
+sudo apt install nvidia-cuda-toolkit
+
+# Via conda
+conda install nvidia::cuda-toolkit
+```
+
+### Package installation
+
+You can install this package in an environnement using pip by typing the following command in the main folder of the package:
 
 ```bash
 pip install --use-pep517 --no-build-isolation .
