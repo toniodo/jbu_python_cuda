@@ -76,6 +76,7 @@ at::Tensor compute_gaussian_kernel(int radius, float sigma) {
     auto kernel = at::zeros({kernel_size, kernel_size}, at::kFloat);
     
     // Compute the Gaussian kernel
+    float factor = 1 / (2 * M_PI * sigma * sigma);
     float sum = 0.0f;
     for (int y = 0; y < kernel_size; ++y) {
         for (int x = 0; x < kernel_size; ++x) {
@@ -84,7 +85,7 @@ at::Tensor compute_gaussian_kernel(int radius, float sigma) {
             float y_dist = y - radius;
             
             // Compute Gaussian function
-            float value = exp(-(x_dist * x_dist + y_dist * y_dist) / (2 * sigma * sigma));
+            float value = factor * exp(-(x_dist * x_dist + y_dist * y_dist) / (2 * sigma * sigma));
             
             // Set the value in the kernel
             kernel[x][y] = value;
