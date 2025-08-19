@@ -17,41 +17,9 @@ original_image = cv2.imread('example_aerial.png')
 downsampled_image = cv2.resize(original_image, (original_image.shape[1] // 14, original_image.shape[0] // 14), interpolation=cv2.INTER_LANCZOS4)
 downsampled_image_up = cv2.resize(downsampled_image, (original_image.shape[1], original_image.shape[0]), interpolation=cv2.INTER_LINEAR)
 
-
-def gkern(radius, std_dev):
-    """
-    Generate a Gaussian kernel.
-
-    Args:
-    - radius (int): The radius of the kernel.
-    - std_dev (float): The standard deviation of the Gaussian distribution.
-
-    Returns:
-    - kernel (torch.Tensor): The Gaussian kernel.
-    """
-
-    # Calculate the kernel size
-    kernel_size = 2 * radius + 1
-
-    # Create a grid of coordinates
-    x = torch.arange(kernel_size) - radius
-    y = torch.arange(kernel_size) - radius
-    x, y = torch.meshgrid(x, y)
-
-    # Calculate the Gaussian distribution
-    gaussian = torch.exp(-((x**2 + y**2) / (2 * std_dev**2)))
-
-    # Normalize the kernel
-    kernel = gaussian / torch.sum(gaussian)
-
-    return kernel
-
-gaussian_kernel = gkern(radius, sigma_s).to('cuda')
 guidance = torch.tensor(cv2.cvtColor(original_image, cv2.COLOR_BGR2GRAY)).unsqueeze(0).unsqueeze(0) / 255.0
 
-#sigma_r = torch.std(guidance, dim=(2,3)).item()
-
-result:torch.Tensor = jbu_cuda.upsample(guidance.float().to('cuda') , torch.tensor(downsampled_image_up).permute(2,0,1).unsqueeze(0).to('cuda') / 255.0, radius, gaussian_kernel, sigma_r)
+result:torch.Tensor = jbu_cuda.upsample(guidance.float().to('cuda') , torch.tensor(downsampled_image_up).permute(2,0,1).unsqueeze(0).to('cuda') / 255.0, radius, sigma_s, sigma_r)
 torch.cuda.empty_cache()
 
 # Create subplots

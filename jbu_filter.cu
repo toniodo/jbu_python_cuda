@@ -68,7 +68,36 @@ __global__ void jbu_filter_kernel(const int64_t numel, const float* high_res, co
     }
 }
 
-at::Tensor upsample(const at::Tensor& high_resolution, const at::Tensor& low_resolution, const int64_t radius, const at::Tensor& gaussian_kernel, const double sigma_range) {
+at::Tensor compute_gaussian_kernel(int radius, float sigma) {
+    // Calculate the kernel size (diameter of the kernel)
+    int kernel_size = 2 * radius + 1;
+    
+    // Create a 2D tensor to hold the kernel
+    auto kernel = at::zeros({kernel_size, kernel_size}, at::kFloat);
+    
+    // Compute the Gaussian kernel
+    float sum = 0.0f;
+    for (int y = 0; y < kernel_size; ++y) {
+        for (int x = 0; x < kernel_size; ++x) {
+            // Calculate distance from the center
+            float x_dist = x - radius;
+            float y_dist = y - radius;
+            
+            // Compute Gaussian function
+            float value = exp(-(x_dist * x_dist + y_dist * y_dist) / (2 * sigma * sigma));
+            
+            // Set the value in the kernel
+            kernel[x][y] = value;
+            
+            // Accumulate for normalization
+            sum += value;
+        }
+    }
+    kernel = kernel / sum;
+    return kernel;
+}
+
+at::Tensor upsample(const at::Tensor& high_resolution, const at::Tensor& low_resolution, const int64_t radius, const float sigma_spatial, const float sigma_range) {
     
     TORCH_CHECK(high_resolution.sizes()[0] == low_resolution.sizes()[0]) // Same batch size
     TORCH_CHECK(high_resolution.sizes()[1] == 1) // Only one channel for the high resolution image (guidance)
@@ -84,6 +113,11 @@ at::Tensor upsample(const at::Tensor& high_resolution, const at::Tensor& low_res
 
     TORCH_INTERNAL_ASSERT(high_resolution.device().type() == at::DeviceType::CUDA);
     TORCH_INTERNAL_ASSERT(low_resolution.device().type() == at::DeviceType::CUDA);
+
+    // Compute gaussian kernel
+    at::Tensor kernel = compute_gaussian_kernel(radius, sigma_spatial);
+    // Move to device
+    at::Tensor gaussian_kernel = kernel.to(at::kCUDA);
 
     at::Tensor high_resolution_contig = high_resolution.contiguous();
     at::Tensor low_resolution_contig = low_resolution.contiguous();
@@ -108,7 +142,7 @@ at::Tensor upsample(const at::Tensor& high_resolution, const at::Tensor& low_res
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "Implementation fo the Joint Bilateral Upsampling (JBU) using CUDA";
     m.def("upsample", &upsample, "Upsample a low resolution image given a guidance image", 
-    pybind11::arg("high_res_tensor"), pybind11::arg("low_res_tensor"), pybind11::arg("radius"), pybind11::arg("gaussian_kernel"), pybind11::arg("sigma_range"));
+    pybind11::arg("high_res_tensor"), pybind11::arg("low_res_tensor"), pybind11::arg("radius"), pybind11::arg("sigma_spatial"), pybind11::arg("sigma_range"));
 }
 
 }
