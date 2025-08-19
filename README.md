@@ -5,7 +5,7 @@ in a Python script with [PyTorch](https://pytorch.org/) tensors.
 
 ## Installation
 
-You can install this package in an environnement using pip by typing the following command in the folde rof the package:
+You can install this package in an environnement using pip by typing the following command in the folder of the package:
 
 ```bash
 pip install --use-pep517 --no-build-isolation .
@@ -27,7 +27,7 @@ sigma_r:float = 0.2
 result:Tensor = jbu_cuda.upsample(guidance:Tensor, low_res:Tensor, radius, sigma_s, sigma_r)
 ```
 
-The provided tensors should contain `float`, with shape `(B,C,H,W)` for the low resolution image (after applying a bilinear upsampling) and `(B,1,H,W)` for the guidance image.
+The provided tensors should contain `float` between `0.0` and `1.0`, with shape `(B,C,H,W)` for the low resolution image (after applying a bilinear upsampling) and `(B,1,H,W)` for the guidance image.
 
 A example script is provided in the [example/](example/) folder.
 
