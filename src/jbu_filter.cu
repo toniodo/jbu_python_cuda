@@ -1,7 +1,7 @@
 #include <torch/library.h>
 #include <torch/extension.h>
 #include <pybind11/pybind11.h>
-
+#include <iostream>
 #include <cuda.h>
 #include <cuda_runtime.h>
 #include <ATen/cuda/CUDAContext.h>
@@ -13,48 +13,52 @@
 
 namespace jbu_cuda {
 
-__global__ void jbu_filter_kernel(const int64_t numel, const float* high_res, const float* low_res, float* final_tensor, int64_t radius, const float *gaussian_kernel, int64_t batch, int64_t channel, int64_t height, int64_t width, float sigma_range)
+__global__ void jbu_filter_kernel(const int64_t numel, const float* high_res, const float* low_res, float* final_tensor, int64_t p_s, int64_t radius, const float *gaussian_kernel, int64_t batch, int64_t channel, int64_t height, int64_t width, int64_t high_channel, float sigma_range)
 {
     int current_id = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (current_id < numel)
     {
-        int w = current_id % width;
+        const int w = current_id % width;
         int tmp = current_id / width;
-        int h = tmp % height;
+        const int h = tmp % height;
         tmp /= height;
-        int c = tmp % channel;
-        int b = tmp / channel;
+        const int c = tmp % channel;
+        const int b = tmp / channel;
+
+        const int low_h = height / p_s;
+        const int low_w = width  / p_s;
 
         float norm_coeff = 0.0;
 
         for (int i = -radius; i <= radius; i++)
         {
             for (int j = -radius; j <= radius; j++)
-            {
-                int current_i = h + i;
+            {   
+                // The current variables will be computed in the low-res space 
+                int current_i = h / p_s + i;
                 if (current_i < 0) {
                     current_i = -current_i; // Reflect back
-                } else if (current_i >= height) {
-                    current_i = 2 * height - current_i - 1; // Reflect back
+                } else if (current_i >= low_h) {
+                    current_i = 2 * low_h - current_i - 1; // Reflect back
                 }
 
-                int current_j = w + j;
+                int current_j = w / p_s + j;
                 if (current_j < 0) {
                     current_j = -current_j; // Reflect back
-                } else if (current_j >= width) {
-                    current_j = 2 * width - current_j - 1; // Reflect back
+                } else if (current_j >= low_w) {
+                    current_j = 2 * low_w - current_j - 1; // Reflect back
                 }
 
-                float range_distance = high_res[TENSORC2IDX(b, 0, h, w, channel, height, width)] - high_res[TENSORC2IDX(b, 0, current_i, current_j, channel, height, width)];
+                float range_distance = high_res[TENSORC2IDX(b, 0, h, w, high_channel, height, width)] - high_res[TENSORC2IDX(b, 0, p_s*current_i, p_s*current_j, high_channel, height, width)];
 
                 // Compute product of filters
-                float local_coeff = gaussian_kernel[IDX2C(i + radius, j + radius, 2*radius+1)]*  // Spatial filter
+                float local_coeff = gaussian_kernel[IDX2C(i + radius, j + radius, 2*radius+1)] * // Spatial filter
                 (1 / (sqrt(2 * M_PI) * sigma_range)) * 
                 exp(-range_distance * range_distance / (2 * sigma_range * sigma_range)); // Range filter
 
                 // Update the pixel value
-                final_tensor[TENSORC2IDX(b, c, h, w, channel, height, width)] += low_res[TENSORC2IDX(b, c, current_i, current_j, channel, height, width)] * local_coeff;
+                final_tensor[TENSORC2IDX(b, c, h, w, channel, height, width)] += low_res[TENSORC2IDX(b, c, current_i, current_j, channel, low_h, low_w)] * local_coeff;
                 norm_coeff += local_coeff;
             }
         }
@@ -95,21 +99,21 @@ at::Tensor compute_gaussian_kernel(int radius, float sigma) {
     return kernel;
 }
 
-at::Tensor upsample(const at::Tensor& high_resolution, const at::Tensor& low_resolution, const int64_t radius, const float sigma_spatial, const float sigma_range) {
+at::Tensor upsample(const at::Tensor& guidance, const at::Tensor& low_resolution, const int64_t p_s, const int64_t radius, const float sigma_spatial, const float sigma_range) {
     
-    TORCH_CHECK(high_resolution.sizes()[0] == low_resolution.sizes()[0]) // Same batch size
-    TORCH_CHECK(high_resolution.sizes()[1] == 1) // Only one channel for the high resolution image (guidance)
-    TORCH_CHECK(high_resolution.sizes()[2] == low_resolution.sizes()[2]) // Same height size
-    TORCH_CHECK(high_resolution.sizes()[3] == low_resolution.sizes()[3]) // Same width size
-    TORCH_CHECK(high_resolution.max().item<float>() < 1.0 + 0.0001) // Check inputs are in float 
-    TORCH_CHECK(low_resolution.max().item<float>() < 1.0 + 0.0001) // Check inputs are in float
+    TORCH_CHECK(guidance.sizes()[0] == low_resolution.sizes()[0]) // Same batch size
+    TORCH_CHECK(guidance.sizes()[1] == 1) // Only one channel for the high resolution image (guidance)
+    TORCH_CHECK((guidance.sizes()[2] / p_s) == low_resolution.sizes()[2]) // Correct height ratio
+    TORCH_CHECK((guidance.sizes()[3] / p_s) == low_resolution.sizes()[3]) // Correct wisth ratio
+    TORCH_CHECK(guidance.max().item<float>() < 1.0 + 0.0001) // Check guidance are in float 
 
-    int batch = high_resolution.sizes()[0];
+    int batch = guidance.sizes()[0];
     int channel = low_resolution.sizes()[1];
-    int height = high_resolution.sizes()[2];
-    int width = high_resolution.sizes()[3];
+    int height = guidance.sizes()[2];
+    int width = guidance.sizes()[3];
 
-    TORCH_INTERNAL_ASSERT(high_resolution.device().type() == at::DeviceType::CUDA);
+    // Check Tensors are on the GPU
+    TORCH_INTERNAL_ASSERT(guidance.device().type() == at::DeviceType::CUDA);
     TORCH_INTERNAL_ASSERT(low_resolution.device().type() == at::DeviceType::CUDA);
 
     // Compute gaussian kernel
@@ -117,11 +121,11 @@ at::Tensor upsample(const at::Tensor& high_resolution, const at::Tensor& low_res
     // Move to device
     at::Tensor gaussian_kernel = kernel.to(at::kCUDA);
 
-    at::Tensor high_resolution_contig = high_resolution.contiguous();
+    at::Tensor guidance_contig = guidance.contiguous();
     at::Tensor low_resolution_contig = low_resolution.contiguous();
     at::Tensor gaussian_kernel_contig = gaussian_kernel.contiguous();
-    at::Tensor result = at::zeros({batch, channel, height, width}, high_resolution_contig.options());
-    const float* high_resolution_ptr = high_resolution_contig.data_ptr<float>();
+    at::Tensor result = at::zeros({batch, channel, height, width}, guidance_contig.options());
+    const float* guidance_ptr = guidance_contig.data_ptr<float>();
     const float* low_resolution_ptr = low_resolution_contig.data_ptr<float>();
     const float* gaussian_kernel_ptr = gaussian_kernel_contig.data_ptr<float>();
     float* result_ptr = result.data_ptr<float>();
@@ -129,7 +133,7 @@ at::Tensor upsample(const at::Tensor& high_resolution, const at::Tensor& low_res
     dim3 dimGrid((int)(result.numel() / 1024) + 1);
 
     AT_DISPATCH_FLOATING_TYPES(result.scalar_type(), "jbu_filter", ([&]{
-        jbu_filter_kernel <<< dimGrid, dimBlock >>> (result.numel(), high_resolution_ptr, low_resolution_ptr, result_ptr, radius, gaussian_kernel_ptr, batch, channel, height, width, sigma_range);
+        jbu_filter_kernel <<< dimGrid, dimBlock >>> (result.numel(), guidance_ptr, low_resolution_ptr, result_ptr, p_s, radius, gaussian_kernel_ptr, batch, channel, height, width, guidance.sizes()[1], sigma_range);
     }));
 
     gpuErrchk( cudaPeekAtLastError() );
@@ -140,7 +144,7 @@ at::Tensor upsample(const at::Tensor& high_resolution, const at::Tensor& low_res
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "Implementation fo the Joint Bilateral Upsampling (JBU) using CUDA";
     m.def("upsample", &upsample, "Upsample a low resolution image given a guidance image", 
-    pybind11::arg("high_res_tensor"), pybind11::arg("low_res_tensor"), pybind11::arg("radius"), pybind11::arg("sigma_spatial"), pybind11::arg("sigma_range"));
+    pybind11::arg("high_res_tensor"), pybind11::arg("low_res_tensor"), pybind11::arg("ratio / patch_size"), pybind11::arg("radius"), pybind11::arg("sigma_spatial"), pybind11::arg("sigma_range"));
 }
 
 }
