@@ -14,7 +14,7 @@
 namespace jbu_cuda {
 
 // Reflect index into [0, limit-1]
-__device__ int reflect(int idx, int limit)
+__device__ inline int reflect(int idx, int limit)
 {
     while (idx < 0 || idx >= limit) {
         if (idx < 0) idx = -idx;                     // mirror left side
@@ -23,7 +23,20 @@ __device__ int reflect(int idx, int limit)
     return idx;
 }
 
-__global__ void jbu_filter_kernel(const int64_t numel, const float* high_res, const float* low_res, float* final_tensor, int64_t p_s, int64_t radius, const float *gaussian_kernel, int64_t batch, int64_t channel, int64_t height, int64_t width, int64_t high_channel, float sigma_range)
+__global__ void jbu_filter_kernel(
+    const int64_t numel, 
+    const float* high_res, // (B, 1, H, W)
+    const float* low_res,  // (B, C, H, W)
+    float* final_tensor,  // (B, C, H, W)
+    int64_t p_s, 
+    int64_t radius, 
+    const float *gaussian_kernel, // (2*r+1, 2*r+1)
+    int64_t batch, // Batch size
+    int64_t channel, // Channel size
+    int64_t height,  
+    int64_t width, 
+    int64_t high_channel, // Number of channels in guidance 
+    float sigma_range)
 {
     int current_id = blockIdx.x * blockDim.x + threadIdx.x;
 
@@ -36,33 +49,33 @@ __global__ void jbu_filter_kernel(const int64_t numel, const float* high_res, co
         const int c = tmp % channel;
         const int b = tmp / channel;
 
-        const int low_h = height / p_s;
-        const int low_w = width  / p_s;
-
-        float norm_coeff = 0.0;
+        float norm_coeff = 0.0f;
+        float guidance_value = high_res[TENSORC2IDX(b, 0, h, w, high_channel, height, width)];
 
         for (int i = -radius; i <= radius; i++)
         {
             for (int j = -radius; j <= radius; j++)
             {   
-                // The current variables will be computed in the low-res space and reflect if out-of-bounds
-                int current_i = reflect(h / p_s + i, low_h);
-                int current_j = reflect(w / p_s + j, low_w);
+                // Sample position in high-res
+                int nh = h + i * p_s;
+                int nw = w + j * p_s;
+                // Reflect if needed
+                nh = reflect(nh, height);
+                nw = reflect(nw, width);
 
-                float range_distance = high_res[TENSORC2IDX(b, 0, h, w, high_channel, height, width)] - high_res[TENSORC2IDX(b, 0, p_s*current_i, p_s*current_j, high_channel, height, width)];
+                float range_distance = guidance_value - high_res[TENSORC2IDX(b, 0, nh, nw, high_channel, height, width)];
 
                 // Compute product of filters
                 float local_coeff = gaussian_kernel[IDX2C(i + radius, j + radius, 2*radius+1)] * // Spatial filter
-                (1 / (sqrt(2 * M_PI) * sigma_range)) * 
-                exp(-range_distance * range_distance / (2 * sigma_range * sigma_range)); // Range filter
+                expf(-range_distance * range_distance / (2.0f * sigma_range * sigma_range)); // Range filter
 
                 // Update the pixel value
-                final_tensor[TENSORC2IDX(b, c, h, w, channel, height, width)] += low_res[TENSORC2IDX(b, c, current_i, current_j, channel, low_h, low_w)] * local_coeff;
+                final_tensor[TENSORC2IDX(b, c, h, w, channel, height, width)] += low_res[TENSORC2IDX(b, c, nh, nw, channel, height, width)] * local_coeff;
                 norm_coeff += local_coeff;
             }
         }
         // Normalize the pixel value
-        if (norm_coeff != 0.0){
+        if (norm_coeff >= 1e-5f){
             final_tensor[TENSORC2IDX(b, c, h, w, channel, height, width)] /=  norm_coeff;
         }
     }
@@ -76,8 +89,6 @@ at::Tensor compute_gaussian_kernel(int radius, float sigma) {
     auto kernel = at::zeros({kernel_size, kernel_size}, at::kFloat);
     
     // Compute the Gaussian kernel
-    float factor = 1 / (2 * M_PI * sigma * sigma);
-    float sum = 0.0f;
     for (int y = 0; y < kernel_size; ++y) {
         for (int x = 0; x < kernel_size; ++x) {
             // Calculate distance from the center
@@ -85,16 +96,12 @@ at::Tensor compute_gaussian_kernel(int radius, float sigma) {
             float y_dist = y - radius;
             
             // Compute Gaussian function
-            float value = factor * exp(-(x_dist * x_dist + y_dist * y_dist) / (2 * sigma * sigma));
+            float value = exp(-(x_dist * x_dist + y_dist * y_dist) / (2 * sigma * sigma));
             
             // Set the value in the kernel
             kernel[x][y] = value;
-            
-            // Accumulate for normalization
-            sum += value;
         }
     }
-    kernel = kernel / sum;
     return kernel;
 }
 
@@ -117,22 +124,27 @@ at::Tensor upsample(const at::Tensor& guidance, const at::Tensor& low_resolution
 
     // Compute gaussian kernel
     at::Tensor kernel = compute_gaussian_kernel(radius, sigma_spatial);
-    // Move to device
-    at::Tensor gaussian_kernel = kernel.to(at::kCUDA);
+    // Flatten and move to device
+    at::Tensor gaussian_kernel = kernel.reshape({-1}).to(at::kCUDA).contiguous();
 
     at::Tensor guidance_contig = guidance.contiguous();
     at::Tensor low_resolution_contig = low_resolution.contiguous();
-    at::Tensor gaussian_kernel_contig = gaussian_kernel.contiguous();
     at::Tensor result = at::zeros({batch, channel, height, width}, guidance_contig.options());
     const float* guidance_ptr = guidance_contig.data_ptr<float>();
     const float* low_resolution_ptr = low_resolution_contig.data_ptr<float>();
-    const float* gaussian_kernel_ptr = gaussian_kernel_contig.data_ptr<float>();
+    const float* gaussian_kernel_ptr = gaussian_kernel.data_ptr<float>();
     float* result_ptr = result.data_ptr<float>();
+    // bilinearly upsample low_resolution to guidance size
+    at::Tensor bili_up = at::upsample_bilinear2d(low_resolution_contig, {height, width}, false);
+    // make contiguous and get pointer
+    at::Tensor bili_up_contig = bili_up.contiguous();
+    const float* bili_up_ptr = bili_up_contig.data_ptr<float>();
+
     dim3 dimBlock(1024);
     dim3 dimGrid((int)(result.numel() / 1024) + 1);
 
     AT_DISPATCH_FLOATING_TYPES(result.scalar_type(), "jbu_filter", ([&]{
-        jbu_filter_kernel <<< dimGrid, dimBlock >>> (result.numel(), guidance_ptr, low_resolution_ptr, result_ptr, p_s, radius, gaussian_kernel_ptr, batch, channel, height, width, guidance.sizes()[1], sigma_range);
+        jbu_filter_kernel <<< dimGrid, dimBlock >>> (result.numel(), guidance_ptr, bili_up_ptr, result_ptr, p_s, radius, gaussian_kernel_ptr, batch, channel, height, width, guidance.sizes()[1], sigma_range);
     }));
 
     gpuErrchk( cudaPeekAtLastError() );
