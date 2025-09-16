@@ -7,7 +7,7 @@ import jbu_cuda
 
 radius = 2 # Filter radius
 sigma_s = 0.5 # Spatial sigma
-p_s = 14 # Downsampling factor
+p_s = 8 # Downsampling factor
 
 
 # Load the original image
@@ -22,7 +22,7 @@ downsampled_image = cv2.resize(original_image, (original_image.shape[1] // p_s, 
 guidance = torch.tensor(cv2.cvtColor(original_image, cv2.COLOR_RGB2GRAY)).unsqueeze(0).unsqueeze(0) / 255.0
 sigma_r = guidance.std(dim=(2,3))
 
-result:torch.Tensor = jbu_cuda.upsample(guidance.float().to('cuda') , torch.tensor(downsampled_image).permute(2,0,1).unsqueeze(0).to('cuda') / 255.0, p_s, radius, sigma_s, sigma_r)
+result:torch.Tensor = jbu_cuda.upsample(guidance.float().to('cuda') , torch.tensor(downsampled_image).permute(2,0,1).unsqueeze(0).to('cuda') / 255.0, radius, sigma_s, sigma_r)
 torch.cuda.empty_cache()
 
 # Create subplots

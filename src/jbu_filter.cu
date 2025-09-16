@@ -28,7 +28,7 @@ __global__ void jbu_filter_kernel(
     const float* high_res, // (B, 1, H, W)
     const float* low_res,  // (B, C, H, W)
     float* final_tensor,  // (B, C, H, W)
-    int64_t p_s, 
+    int64_t p_s, // Downsampling factor
     int64_t radius, 
     const float *gaussian_kernel, // (2*r+1, 2*r+1)
     int64_t batch, // Batch size
@@ -105,18 +105,19 @@ at::Tensor compute_gaussian_kernel(int radius, float sigma) {
     return kernel;
 }
 
-at::Tensor upsample(const at::Tensor& guidance, const at::Tensor& low_resolution, const int64_t p_s, const int64_t radius, const float sigma_spatial, const float sigma_range) {
+at::Tensor upsample(const at::Tensor& guidance, const at::Tensor& low_resolution, const int64_t radius, const float sigma_spatial, const float sigma_range) {
     
     TORCH_CHECK(guidance.sizes()[0] == low_resolution.sizes()[0]) // Same batch size
     TORCH_CHECK(guidance.sizes()[1] == 1) // Only one channel for the high resolution image (guidance)
-    TORCH_CHECK((guidance.sizes()[2] / p_s) == low_resolution.sizes()[2]) // Correct height ratio
-    TORCH_CHECK((guidance.sizes()[3] / p_s) == low_resolution.sizes()[3]) // Correct wisth ratio
-    TORCH_CHECK(guidance.max().item<float>() < 1.0 + 0.0001) // Check guidance are in float 
+    TORCH_CHECK(guidance.max().item<float>() < 1.0 + 0.0001) // Check guidance contains float 
 
     int batch = guidance.sizes()[0];
     int channel = low_resolution.sizes()[1];
     int height = guidance.sizes()[2];
     int width = guidance.sizes()[3];
+
+    int p_s = guidance.sizes()[2] / low_resolution.sizes()[2]; // Get the downsampling ratio
+    TORCH_CHECK((guidance.sizes()[3] / p_s) == low_resolution.sizes()[3]) // Correct width ratio
 
     // Check Tensors are on the GPU
     TORCH_INTERNAL_ASSERT(guidance.device().type() == at::DeviceType::CUDA);
@@ -155,7 +156,7 @@ at::Tensor upsample(const at::Tensor& guidance, const at::Tensor& low_resolution
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.doc() = "Implementation fo the Joint Bilateral Upsampling (JBU) using CUDA";
     m.def("upsample", &upsample, "Upsample a low resolution image given a guidance image", 
-    pybind11::arg("high_res_tensor"), pybind11::arg("low_res_tensor"), pybind11::arg("ratio / patch_size"), pybind11::arg("radius"), pybind11::arg("sigma_spatial"), pybind11::arg("sigma_range"));
+    pybind11::arg("high_res_tensor"), pybind11::arg("low_res_tensor"), pybind11::arg("radius"), pybind11::arg("sigma_spatial"), pybind11::arg("sigma_range"));
 }
 
 }
