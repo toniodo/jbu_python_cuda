@@ -13,6 +13,16 @@
 
 namespace jbu_cuda {
 
+// Reflect index into [0, limit-1]
+__device__ int reflect(int idx, int limit)
+{
+    while (idx < 0 || idx >= limit) {
+        if (idx < 0) idx = -idx;                     // mirror left side
+        if (idx >= limit) idx = 2*limit - idx - 1;   // mirror right side
+    }
+    return idx;
+}
+
 __global__ void jbu_filter_kernel(const int64_t numel, const float* high_res, const float* low_res, float* final_tensor, int64_t p_s, int64_t radius, const float *gaussian_kernel, int64_t batch, int64_t channel, int64_t height, int64_t width, int64_t high_channel, float sigma_range)
 {
     int current_id = blockIdx.x * blockDim.x + threadIdx.x;
@@ -35,20 +45,9 @@ __global__ void jbu_filter_kernel(const int64_t numel, const float* high_res, co
         {
             for (int j = -radius; j <= radius; j++)
             {   
-                // The current variables will be computed in the low-res space 
-                int current_i = h / p_s + i;
-                if (current_i < 0) {
-                    current_i = -current_i; // Reflect back
-                } else if (current_i >= low_h) {
-                    current_i = 2 * low_h - current_i - 1; // Reflect back
-                }
-
-                int current_j = w / p_s + j;
-                if (current_j < 0) {
-                    current_j = -current_j; // Reflect back
-                } else if (current_j >= low_w) {
-                    current_j = 2 * low_w - current_j - 1; // Reflect back
-                }
+                // The current variables will be computed in the low-res space and reflect if out-of-bounds
+                int current_i = reflect(h / p_s + i, low_h);
+                int current_j = reflect(w / p_s + j, low_w);
 
                 float range_distance = high_res[TENSORC2IDX(b, 0, h, w, high_channel, height, width)] - high_res[TENSORC2IDX(b, 0, p_s*current_i, p_s*current_j, high_channel, height, width)];
 
