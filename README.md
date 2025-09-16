@@ -37,11 +37,12 @@ import jbu_cuda
 sigma_s:float = 4
 radius:int = 10
 sigma_r:float = 0.2
+downsampling_factor:int = 14
 
-result:Tensor = jbu_cuda.upsample(guidance:Tensor, low_res:Tensor, radius, sigma_s, sigma_r)
+result:Tensor = jbu_cuda.upsample(guidance:Tensor, low_res:Tensor, downsampling_factor, radius, sigma_s, sigma_r)
 ```
 
-The provided tensors should contain `float` between `0.0` and `1.0`, with shape `(B,C,H,W)` for the low resolution image (after applying a bilinear upsampling) and `(B,1,H,W)` for the guidance image.
+The provided tensors should contain `float` between `0.0` and `1.0`, with shape `(B,C,h,w)` for the low resolution image and `(B,1,H,W)` for the guidance image.
 
 A example script is provided in the [example/](example/) folder.
 
