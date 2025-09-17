@@ -1,0 +1,8 @@
+[build-system]
+requires = [
+    "setuptools",
+    "wheel",
+    "pybind11",   # needed for the import in setup.py
+    "torch",      # needed for BuildExtension
+]
+build-backend = "setuptools.build_meta"

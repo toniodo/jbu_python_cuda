@@ -22,7 +22,7 @@ conda install nvidia::cuda-toolkit
 You can install this package in an environnement using pip by typing the following command in the main folder of the package:
 
 ```bash
-pip install --use-pep517 --no-build-isolation .
+pip install .
 ```
 
 ## Usage
